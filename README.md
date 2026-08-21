@@ -211,15 +211,25 @@ Here is the exact step-by-step lifecycle of a message sent from `sirjan` to `sum
 - npm or bun
 
 ### Setup & Run
-1. Install dependencies:
+1. Configure your environment (optional if using in-memory mode, required for Supabase):
+   Copy `.env.example` to `.env` and fill in your Supabase project credentials:
+   ```bash
+   cp .env.example .env
+   ```
+   ```env
+   SUPABASE_URL=https://your-project.supabase.co
+   SUPABASE_ANON_KEY=your-anon-key
+   SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+   ```
+2. Install dependencies:
    ```bash
    npm install
    ```
-2. Start the development server (runs Express + Vite on port 3000):
+3. Start the development server (runs Express + Vite in TypeScript via `tsx` on port 3000):
    ```bash
    npm run dev
    ```
-3. Open your browser at `http://localhost:3000`.
+4. Open your browser at `http://localhost:3000`.
 
 ### Testing Multiple Users
 - Open **Tab 1** in standard browsing mode and sign in as `sirjan`.
