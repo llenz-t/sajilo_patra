@@ -25,6 +25,7 @@ class RealtimeBus {
   private ws: WebSocket | null = null;
   private broadcastChannel: BroadcastChannel | null = null;
   private listeners: Map<string, Set<(msg: RealtimeMessagePayload) => void>> = new Map();
+  private globalMessageListeners: Set<(msg: RealtimeMessagePayload) => void> = new Set();
   private statusListeners: Set<(status: ConnectionStatus, latencyMs?: number) => void> = new Set();
   private historyListeners: Set<(messages: RealtimeMessagePayload[]) => void> = new Set();
   private presenceListeners: Set<(onlineUsers: string[]) => void> = new Set();
@@ -230,11 +231,18 @@ class RealtimeBus {
     };
   }
 
+  public subscribeAllMessages(callback: (msg: RealtimeMessagePayload) => void): () => void {
+    this.globalMessageListeners.add(callback);
+    return () => {
+      this.globalMessageListeners.delete(callback);
+    };
+  }
+
   public dispatchMessage(payload: RealtimeMessagePayload): void {
     // 1. Send via WebSocket if connected
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      // Map contact IDs (e.g. 'user-akhil') to usernames ('akhil_b')
-      const recipient = payload.receiverId.replace("user-", "").replace("-", "_");
+      // Map contact IDs (e.g. 'user-akhil_b') to usernames ('akhil_b')
+      const recipient = payload.receiverId.replace("user-", "");
       this.ws.send(
         JSON.stringify({
           type: "message",
@@ -258,12 +266,25 @@ class RealtimeBus {
 
     // 3. Dispatch to local room listeners
     this.notifyListeners(payload.receiverId, payload);
+    this.notifyListeners(payload.senderId, payload);
   }
 
   private notifyListeners(roomId: string, payload: RealtimeMessagePayload) {
-    const roomListeners = this.listeners.get(roomId);
-    if (roomListeners) {
-      roomListeners.forEach((cb) => cb(payload));
+    this.globalMessageListeners.forEach((cb) => cb(payload));
+
+    const directListeners = this.listeners.get(roomId);
+    if (directListeners) {
+      directListeners.forEach((cb) => cb(payload));
+    }
+
+    const prefixedId = roomId.startsWith("user-") ? roomId : `user-${roomId}`;
+    const unprefixedId = roomId.replace("user-", "");
+    
+    if (prefixedId !== roomId) {
+      this.listeners.get(prefixedId)?.forEach((cb) => cb(payload));
+    }
+    if (unprefixedId !== roomId) {
+      this.listeners.get(unprefixedId)?.forEach((cb) => cb(payload));
     }
   }
 

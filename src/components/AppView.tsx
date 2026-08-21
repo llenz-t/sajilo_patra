@@ -7,7 +7,6 @@ import {
   UniversityMatchProfile 
 } from "@/src/types";
 import { 
-  INITIAL_CONTACTS, 
   INITIAL_NOTIFICATIONS, 
   UNIVERSITY_MATCH_PROFILES 
 } from "@/src/data/mockData";
@@ -16,6 +15,7 @@ import {
   RealtimeMessagePayload,
   realtimeBus
 } from "@/src/lib/realtime";
+import { getStoredAuthUser } from "@/src/lib/auth";
 import { motion, AnimatePresence } from "motion/react";
 import { 
   MessageSquare, 
@@ -52,8 +52,20 @@ interface AppViewProps {
 export const AppView: React.FC<AppViewProps> = ({ onBackToLanding }) => {
   const [currentSection, setCurrentSection] = useState<AppSection>("messages");
   const [isSidebarHovered, setIsSidebarHovered] = useState(false);
-  const [contacts, setContacts] = useState<Contact[]>(INITIAL_CONTACTS);
-  const [selectedContact, setSelectedContact] = useState<Contact>(INITIAL_CONTACTS[0]);
+  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [selectedContact, setSelectedContact] = useState<Contact>({
+    id: "user-akhil_b",
+    name: "Akhil Bhandari",
+    handle: "@akhil_b",
+    status: "offline",
+    lastSeen: "Active recently",
+    lastMessage: "",
+    lastMessageTime: "",
+    unreadCount: 0,
+    sharedInterests: ["Distributed Systems", "Rust", "Computer Architecture"],
+    university: "Kathmandu University",
+    major: "Computer Engineering"
+  });
   const [notifications, setNotifications] = useState<AppNotification[]>(INITIAL_NOTIFICATIONS);
   const [searchFilter, setSearchFilter] = useState("");
   const [typedMessage, setTypedMessage] = useState("");
@@ -70,80 +82,111 @@ export const AppView: React.FC<AppViewProps> = ({ onBackToLanding }) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const realtimeManagerRef = useRef<RealtimeChatManager | null>(null);
 
-  const [chatHistories, setChatHistories] = useState<Record<string, ChatMessage[]>>({
-    'user-akhil': [
-      { 
-        id: '1', 
-        senderId: 'user-akhil', 
-        receiverId: 'me', 
-        content: 'Hey! The routing table lookup is completely optimized now.', 
-        timestamp: '10:14 AM', 
-        status: 'read', 
-        isMe: false 
-      },
-      { 
-        id: '2', 
-        senderId: 'me', 
-        receiverId: 'user-akhil', 
-        content: 'Awesome! Did you test message persistence as well?', 
-        timestamp: '10:15 AM', 
-        status: 'read', 
-        isMe: true 
-      },
-      { 
-        id: '3', 
-        senderId: 'user-akhil', 
-        receiverId: 'me', 
-        content: 'Yes, everything works reliably even during network drops.', 
-        timestamp: '10:16 AM', 
-        status: 'read', 
-        isMe: false 
-      },
-      {
-        id: '4',
-        senderId: 'user-akhil',
-        receiverId: 'me',
-        content: 'Check out this quick voice note about the distributed architecture implementation.',
-        timestamp: '10:18 AM',
-        status: 'read',
-        isMe: false,
-        type: 'voice',
-        voiceDuration: '0:22',
-        voiceWaveform: [14, 24, 18, 28, 22, 16, 26, 12, 20, 30, 24, 18, 22, 14]
+  // Empty initial chatHistories - NO placeholder mock chats
+  const [chatHistories, setChatHistories] = useState<Record<string, ChatMessage[]>>({});
+
+  // 1. Fetch real users from backend database
+  useEffect(() => {
+    async function fetchUsers() {
+      try {
+        const res = await fetch("/api/profiles");
+        if (!res.ok) return;
+        const profiles = await res.json();
+        if (Array.isArray(profiles) && profiles.length > 0) {
+          const authUser = getStoredAuthUser();
+          const myUsername = authUser?.username || "aayush_s";
+
+          const mappedContacts: Contact[] = profiles
+            .filter((p: any) => p.username !== myUsername)
+            .map((p: any) => {
+              const displayName = p.username
+                .split("_")
+                .map((w: string) => w.charAt(0).toUpperCase() + w.slice(1))
+                .join(" ");
+
+              const domain = p.email ? p.email.split("@")[1] : "";
+              const uniName = domain.includes("ku")
+                ? "Kathmandu University"
+                : domain.includes("tu") || domain.includes("ioe")
+                ? "Tribhuvan University"
+                : domain.includes("apex")
+                ? "Apex College"
+                : "Nepal Academic Network";
+
+              return {
+                id: `user-${p.username}`,
+                name: displayName,
+                handle: `@${p.username}`,
+                status: "offline",
+                lastSeen: "Registered Member",
+                lastMessage: "",
+                lastMessageTime: "",
+                unreadCount: 0,
+                sharedInterests: ["Engineering", "Computer Science", "Collaboration"],
+                university: uniName,
+                major: "Registered Student"
+              };
+            });
+
+          if (mappedContacts.length > 0) {
+            setContacts(mappedContacts);
+            setSelectedContact(prev => {
+              const match = mappedContacts.find(c => c.id === prev.id);
+              return match || mappedContacts[0];
+            });
+          }
+        }
+      } catch (err) {
+        console.warn("Failed to load profiles from database:", err);
       }
-    ],
-    'user-sirjan': [
-      { 
-        id: '1', 
-        senderId: 'user-sirjan', 
-        receiverId: 'me', 
-        content: 'Would you like to review the updated typography and layout guidelines?', 
-        timestamp: 'Yesterday', 
-        status: 'read', 
-        isMe: false 
-      },
-      { 
-        id: '2', 
-        senderId: 'me', 
-        receiverId: 'user-sirjan', 
-        content: 'Yes, generous line spacing and spacious hierarchy make it much easier to read.', 
-        timestamp: 'Yesterday', 
-        status: 'read', 
-        isMe: true 
+    }
+
+    fetchUsers();
+  }, []);
+
+  // 2. Fetch past messages for current authenticated user
+  useEffect(() => {
+    async function fetchPastMessages() {
+      const authUser = getStoredAuthUser();
+      const myUsername = authUser?.username || "aayush_s";
+      try {
+        const res = await fetch(`/api/messages?user=${encodeURIComponent(myUsername)}`);
+        if (!res.ok) return;
+        const msgs = await res.json();
+        if (Array.isArray(msgs) && msgs.length > 0) {
+          setChatHistories(prev => {
+            const next = { ...prev };
+            msgs.forEach((m: any) => {
+              const peerUsername = m.from === myUsername ? m.to : m.from;
+              const peerKey = `user-${peerUsername}`;
+              if (!next[peerKey]) next[peerKey] = [];
+              const isMe = m.from === myUsername;
+              const exists = next[peerKey].some(
+                ex => ex.id === m.id || (ex.content === m.content && ex.timestamp === m.timestamp)
+              );
+              if (!exists) {
+                next[peerKey].push({
+                  id: m.id || `msg-${Date.now()}-${Math.random()}`,
+                  senderId: isMe ? "me" : peerKey,
+                  receiverId: isMe ? peerKey : "me",
+                  content: m.content,
+                  timestamp: m.timestamp ? new Date(m.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "Recently",
+                  status: "read",
+                  isMe,
+                  type: "text"
+                });
+              }
+            });
+            return next;
+          });
+        }
+      } catch (e) {
+        console.warn("Failed to fetch messages:", e);
       }
-    ],
-    'user-priya': [
-      {
-        id: '1',
-        senderId: 'user-priya',
-        receiverId: 'me',
-        content: 'Hey, I just pushed the study group notes for our upcoming engineering project.',
-        timestamp: '2 hours ago',
-        status: 'read',
-        isMe: false
-      }
-    ]
-  });
+    }
+
+    fetchPastMessages();
+  }, []);
 
   // Voice playback auto-stop timer
   useEffect(() => {
@@ -156,59 +199,60 @@ export const AppView: React.FC<AppViewProps> = ({ onBackToLanding }) => {
     return () => clearInterval(timer);
   }, [playingVoiceId]);
 
-  // Realtime channel listener
+  // Realtime WebSocket channel & global message listener
   useEffect(() => {
-    const manager = new RealtimeChatManager();
-    realtimeManagerRef.current = manager;
+    const authUser = getStoredAuthUser();
+    const myUsername = authUser?.username || "aayush_s";
 
-    manager.initChannel(
-      selectedContact.id,
-      (incoming: RealtimeMessagePayload) => {
-        const newMsg: ChatMessage = {
-          id: incoming.id,
-          senderId: incoming.senderId,
-          receiverId: incoming.receiverId,
-          content: incoming.content,
-          timestamp: incoming.timestamp,
-          status: 'read',
-          isMe: false,
-          type: incoming.type || 'text'
-        };
+    const unsubAll = realtimeBus.subscribeAllMessages((incoming: RealtimeMessagePayload) => {
+      const isFromMe = incoming.senderId === myUsername || incoming.senderId === "me";
+      const peerUsername = isFromMe ? incoming.receiverId : incoming.senderId;
+      const peerKey = peerUsername.startsWith("user-") ? peerUsername : `user-${peerUsername}`;
 
-        setChatHistories(prev => ({
+      const newMsg: ChatMessage = {
+        id: incoming.id,
+        senderId: isFromMe ? "me" : peerKey,
+        receiverId: isFromMe ? peerKey : "me",
+        content: incoming.content,
+        timestamp: incoming.timestamp,
+        status: "read",
+        isMe: isFromMe,
+        type: incoming.type || "text",
+        voiceDuration: incoming.voiceDuration,
+        voiceWaveform: incoming.voiceWaveform
+      };
+
+      setChatHistories(prev => {
+        const existing = prev[peerKey] || [];
+        const duplicate = existing.some(m => m.id === incoming.id || (m.content === incoming.content && m.timestamp === incoming.timestamp));
+        if (duplicate) return prev;
+        return {
           ...prev,
-          [incoming.senderId]: [...(prev[incoming.senderId] || []), newMsg]
-        }));
-      }
-    );
+          [peerKey]: [...existing, newMsg]
+        };
+      });
+    });
 
-    return () => {
-      manager.cleanup();
-    };
-  }, [selectedContact.id]);
-
-  // Connect and sync history and live presence from WebSocket
-  useEffect(() => {
     const unsubHistory = realtimeBus.subscribeHistory((messages) => {
       setChatHistories(prev => {
         const next = { ...prev };
         messages.forEach(m => {
-          const peerKey = m.senderId === 'me' || m.senderId === 'aayush_s' 
-            ? (m.receiverId.startsWith('user-') ? m.receiverId : `user-${m.receiverId}`) 
-            : (m.senderId.startsWith('user-') ? m.senderId : `user-${m.senderId}`);
-          
+          const isFromMe = m.senderId === myUsername || m.senderId === "me";
+          const peerUsername = isFromMe ? m.receiverId : m.senderId;
+          const peerKey = peerUsername.startsWith("user-") ? peerUsername : `user-${peerUsername}`;
+
           if (!next[peerKey]) next[peerKey] = [];
           const exists = next[peerKey].some(existing => existing.content === m.content && existing.timestamp === m.timestamp);
           if (!exists) {
             next[peerKey].push({
               id: m.id,
-              senderId: m.senderId,
-              receiverId: m.receiverId,
+              senderId: isFromMe ? "me" : peerKey,
+              receiverId: isFromMe ? peerKey : "me",
               content: m.content,
               timestamp: m.timestamp,
-              status: 'read',
-              isMe: m.senderId === 'me' || m.senderId === 'aayush_s',
-              type: 'text'
+              status: "read",
+              isMe: isFromMe,
+              type: "text"
             });
           }
         });
@@ -218,26 +262,27 @@ export const AppView: React.FC<AppViewProps> = ({ onBackToLanding }) => {
 
     const unsubPresence = realtimeBus.subscribePresence((onlineUsers) => {
       setContacts(prev => prev.map(c => {
-        const handleName = c.handle.replace('@', '').toLowerCase();
-        const rawId = c.id.replace('user-', '').toLowerCase();
+        const handleName = c.handle.replace("@", "").toLowerCase();
+        const rawId = c.id.replace("user-", "").toLowerCase();
         const isOnline = onlineUsers.some(u => {
           const lower = u.toLowerCase();
-          return lower === handleName || lower === rawId || lower === rawId.replace('-', '_');
+          return lower === handleName || lower === rawId;
         });
         return {
           ...c,
-          status: isOnline ? 'online' : c.status
+          status: isOnline ? "online" : "offline"
         };
       }));
     });
 
     return () => {
+      unsubAll();
       unsubHistory();
       unsubPresence();
     };
   }, []);
 
-  // Scroll to bottom
+  // Scroll to bottom on updates
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chatHistories, selectedContact.id]);
@@ -255,34 +300,28 @@ export const AppView: React.FC<AppViewProps> = ({ onBackToLanding }) => {
     return () => clearInterval(timer);
   }, [isCallActive]);
 
-  const activeMessages = chatHistories[selectedContact.id] || [
-    { 
-      id: 'init', 
-      senderId: selectedContact.id, 
-      receiverId: 'me', 
-      content: selectedContact.lastMessage, 
-      timestamp: selectedContact.lastMessageTime, 
-      status: 'read', 
-      isMe: false 
-    }
-  ];
+  const activeMessages = chatHistories[selectedContact.id] || [];
 
   const handleSendMessage = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!typedMessage.trim()) return;
 
     const messageContent = typedMessage.trim();
-    const timestampStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const timestampStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     const msgId = `msg-${Date.now()}`;
+    const authUser = getStoredAuthUser();
+    const myUsername = authUser?.username || "aayush_s";
+    const targetUsername = selectedContact.handle.replace("@", "");
 
     const newMsg: ChatMessage = {
       id: msgId,
-      senderId: 'me',
+      senderId: "me",
       receiverId: selectedContact.id,
       content: messageContent,
       timestamp: timestampStr,
-      status: 'delivered',
-      isMe: true
+      status: "delivered",
+      isMe: true,
+      type: "text"
     };
 
     setChatHistories(prev => ({
@@ -292,55 +331,35 @@ export const AppView: React.FC<AppViewProps> = ({ onBackToLanding }) => {
 
     setTypedMessage("");
 
-    if (realtimeManagerRef.current) {
-      realtimeManagerRef.current.sendMessage({
-        id: msgId,
-        senderId: 'me',
-        receiverId: selectedContact.id,
-        content: messageContent,
-        timestamp: timestampStr,
-        type: 'text'
-      });
-    }
-
-    // Interactive reply simulation
-    setTimeout(() => {
-      const replies = [
-        `Got it! Let's continue working on this together.`,
-        `Sounds good. I will check the syllabus notes and share the updates shortly.`,
-        `That works perfectly. Let's sync up in the library study lounge.`
-      ];
-      const randomReply = replies[Math.floor(Math.random() * replies.length)];
-      const replyMsg: ChatMessage = {
-        id: `reply-${Date.now()}`,
-        senderId: selectedContact.id,
-        receiverId: 'me',
-        content: randomReply,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        status: 'read',
-        isMe: false
-      };
-
-      setChatHistories(prev => ({
-        ...prev,
-        [selectedContact.id]: [...(prev[selectedContact.id] || []), replyMsg]
-      }));
-    }, 1100);
+    // Dispatch real WebSocket frame and commit to Supabase messages
+    realtimeBus.dispatchMessage({
+      id: msgId,
+      senderId: myUsername,
+      receiverId: targetUsername,
+      content: messageContent,
+      timestamp: timestampStr,
+      type: "text"
+    });
   };
 
   const handleSendVoiceNote = () => {
     setIsVoiceRecording(false);
-    const timestampStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const timestampStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const voiceMsgId = `voice-${Date.now()}`;
+    const authUser = getStoredAuthUser();
+    const myUsername = authUser?.username || "aayush_s";
+    const targetUsername = selectedContact.handle.replace("@", "");
+
     const voiceMsg: ChatMessage = {
-      id: `voice-${Date.now()}`,
-      senderId: 'me',
+      id: voiceMsgId,
+      senderId: "me",
       receiverId: selectedContact.id,
-      content: 'Voice note recorded',
+      content: "Voice note recorded",
       timestamp: timestampStr,
-      status: 'delivered',
+      status: "delivered",
       isMe: true,
-      type: 'voice',
-      voiceDuration: '0:14',
+      type: "voice",
+      voiceDuration: "0:14",
       voiceWaveform: [10, 18, 26, 14, 22, 30, 20, 16, 24, 18, 12]
     };
 
@@ -348,6 +367,17 @@ export const AppView: React.FC<AppViewProps> = ({ onBackToLanding }) => {
       ...prev,
       [selectedContact.id]: [...(prev[selectedContact.id] || []), voiceMsg]
     }));
+
+    realtimeBus.dispatchMessage({
+      id: voiceMsgId,
+      senderId: myUsername,
+      receiverId: targetUsername,
+      content: "Voice note (0:14)",
+      timestamp: timestampStr,
+      type: "voice",
+      voiceDuration: "0:14",
+      voiceWaveform: [10, 18, 26, 14, 22, 30, 20, 16, 24, 18, 12]
+    });
   };
 
   const handleNotificationAction = (id: string, action: 'accept' | 'reject') => {
@@ -578,49 +608,63 @@ export const AppView: React.FC<AppViewProps> = ({ onBackToLanding }) => {
 
               {/* Contacts List */}
               <div className="flex-grow overflow-y-auto p-2.5 space-y-1">
-                {filteredContacts.map(contact => {
-                  const isSelected = selectedContact.id === contact.id;
-                  const initials = contact.name.split(' ').map(n => n[0]).join('');
+                {filteredContacts.length === 0 ? (
+                  <div className="p-6 text-center text-xs text-zinc-500">
+                    No users found in database.
+                  </div>
+                ) : (
+                  filteredContacts.map(contact => {
+                    const isSelected = selectedContact.id === contact.id;
+                    const initials = contact.name.split(' ').map(n => n[0]).join('');
+                    const hist = chatHistories[contact.id] || [];
+                    const lastMsg = hist.length > 0 ? hist[hist.length - 1] : null;
+                    const lastMessageText = lastMsg 
+                      ? (lastMsg.type === 'voice' ? 'Voice note' : lastMsg.content) 
+                      : (contact.status === 'online' ? 'Active now' : 'No messages yet');
+                    const lastMessageTime = lastMsg ? lastMsg.timestamp : '';
 
-                  return (
-                    <div
-                      key={contact.id}
-                      onClick={() => setSelectedContact(contact)}
-                      className={`p-3 sm:p-3.5 rounded-xl cursor-pointer transition-all duration-150 flex items-center gap-3.5 ${
-                        isSelected
-                          ? "bg-zinc-900 text-white shadow-sm"
-                          : "hover:bg-zinc-900/50 text-zinc-400 hover:text-zinc-200"
-                      }`}
-                    >
-                      {/* Avatar (Larger Instagram-style Avatar) */}
-                      <div className="shrink-0">
-                        <div className={`w-13 h-13 rounded-full flex items-center justify-center font-bold text-base ${
-                          isSelected ? "bg-white text-black" : "bg-zinc-800 text-zinc-200"
-                        }`}>
-                          {initials}
+                    return (
+                      <div
+                        key={contact.id}
+                        onClick={() => setSelectedContact(contact)}
+                        className={`p-3 sm:p-3.5 rounded-xl cursor-pointer transition-all duration-150 flex items-center gap-3.5 ${
+                          isSelected
+                            ? "bg-zinc-900 text-white shadow-sm"
+                            : "hover:bg-zinc-900/50 text-zinc-400 hover:text-zinc-200"
+                        }`}
+                      >
+                        {/* Avatar (Larger Instagram-style Avatar) */}
+                        <div className="shrink-0">
+                          <div className={`w-13 h-13 rounded-full flex items-center justify-center font-bold text-base ${
+                            isSelected ? "bg-white text-black" : "bg-zinc-800 text-zinc-200"
+                          }`}>
+                            {initials}
+                          </div>
+                        </div>
+
+                        {/* Info */}
+                        <div className="flex-grow min-w-0">
+                          <div className="flex items-baseline justify-between mb-0.5">
+                            <h4 className="font-semibold text-[15px] text-white truncate">
+                              {contact.name}
+                            </h4>
+                            {lastMessageTime && (
+                              <span className="text-xs text-zinc-500 shrink-0 ml-2 font-normal">
+                                {lastMessageTime}
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[13px] text-zinc-400 truncate leading-relaxed">
+                            {lastMessageText}
+                          </div>
+                          <div className="text-xs text-zinc-500 truncate mt-0.5">
+                            {contact.university}
+                          </div>
                         </div>
                       </div>
-
-                      {/* Info */}
-                      <div className="flex-grow min-w-0">
-                        <div className="flex items-baseline justify-between mb-0.5">
-                          <h4 className="font-semibold text-[15px] text-white truncate">
-                            {contact.name}
-                          </h4>
-                          <span className="text-xs text-zinc-500 shrink-0 ml-2 font-normal">
-                            {contact.lastMessageTime}
-                          </span>
-                        </div>
-                        <div className="text-[13px] text-zinc-400 truncate leading-relaxed">
-                          {contact.lastMessage}
-                        </div>
-                        <div className="text-xs text-zinc-500 truncate mt-0.5">
-                          {contact.university}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })
+                )}
               </div>
 
             </div>
@@ -711,82 +755,97 @@ export const AppView: React.FC<AppViewProps> = ({ onBackToLanding }) => {
               </AnimatePresence>
 
               {/* Chat Message Stream */}
-              <div className="flex-grow p-6 sm:p-10 overflow-y-auto space-y-6">
-                {activeMessages.map((msg) => (
-                  <motion.div
-                    key={msg.id}
-                    initial={{ opacity: 0, y: 8 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ duration: 0.2 }}
-                    className={`flex flex-col ${msg.isMe ? "items-end" : "items-start"}`}
-                  >
-                    {/* Voice Note Bubble */}
-                    {msg.type === "voice" ? (
-                      <div
-                        className={`px-5 py-4 rounded-2xl max-w-md flex items-center gap-4 ${
-                          msg.isMe
-                            ? "bg-white text-black rounded-tr-sm"
-                            : "bg-zinc-900 border border-zinc-800 text-white rounded-tl-sm"
-                        }`}
-                      >
-                        <button
-                          onClick={() => setPlayingVoiceId(playingVoiceId === msg.id ? null : msg.id)}
-                          className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors cursor-pointer shrink-0 ${
-                            msg.isMe ? "bg-black text-white hover:bg-zinc-800" : "bg-white text-black hover:bg-zinc-200"
+              <div className="flex-grow p-6 sm:p-10 overflow-y-auto space-y-6 flex flex-col">
+                {activeMessages.length === 0 ? (
+                  <div className="my-auto flex flex-col items-center justify-center text-center p-8 select-none">
+                    <div className="w-16 h-16 rounded-full bg-zinc-900 border border-zinc-800 flex items-center justify-center text-xl font-bold text-zinc-300 mb-4">
+                      {selectedContact.name.split(' ').map(n => n[0]).join('')}
+                    </div>
+                    <h4 className="text-lg font-bold text-white mb-1">{selectedContact.name}</h4>
+                    <p className="text-sm text-zinc-400 mb-2">
+                      {selectedContact.handle} • {selectedContact.university}
+                    </p>
+                    <p className="text-xs text-zinc-500 max-w-sm">
+                      No messages yet. Send a message below to start chatting with {selectedContact.name}.
+                    </p>
+                  </div>
+                ) : (
+                  activeMessages.map((msg) => (
+                    <motion.div
+                      key={msg.id}
+                      initial={{ opacity: 0, y: 8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.2 }}
+                      className={`flex flex-col ${msg.isMe ? "items-end" : "items-start"}`}
+                    >
+                      {/* Voice Note Bubble */}
+                      {msg.type === "voice" ? (
+                        <div
+                          className={`px-5 py-4 rounded-2xl max-w-md flex items-center gap-4 ${
+                            msg.isMe
+                              ? "bg-white text-black rounded-tr-sm"
+                              : "bg-zinc-900 border border-zinc-800 text-white rounded-tl-sm"
                           }`}
                         >
-                          {playingVoiceId === msg.id ? (
-                            <Pause className="w-4 h-4" />
-                          ) : (
-                            <Play className="w-4 h-4 ml-0.5" />
-                          )}
-                        </button>
+                          <button
+                            onClick={() => setPlayingVoiceId(playingVoiceId === msg.id ? null : msg.id)}
+                            className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors cursor-pointer shrink-0 ${
+                              msg.isMe ? "bg-black text-white hover:bg-zinc-800" : "bg-white text-black hover:bg-zinc-200"
+                            }`}
+                          >
+                            {playingVoiceId === msg.id ? (
+                              <Pause className="w-4 h-4" />
+                            ) : (
+                              <Play className="w-4 h-4 ml-0.5" />
+                            )}
+                          </button>
 
-                        <div className="space-y-1.5">
-                          <div className="flex items-center gap-1.5 h-6">
-                            {(msg.voiceWaveform || [12, 20, 16, 24, 18, 14, 22, 10, 18]).map((h, i) => {
-                              const isThisPlaying = playingVoiceId === msg.id;
-                              return (
-                                <motion.div
-                                  key={i}
-                                  animate={isThisPlaying ? {
-                                    height: [`${Math.max(4, h * 0.3)}px`, `${h}px`, `${Math.max(4, h * 0.4)}px`]
-                                  } : { height: `${h}px` }}
-                                  transition={isThisPlaying ? {
-                                    repeat: Infinity,
-                                    duration: 0.7 + (i % 3) * 0.2,
-                                    ease: "easeInOut"
-                                  } : { duration: 0.15 }}
-                                  className={`w-1 rounded-full ${msg.isMe ? "bg-black" : "bg-white"}`}
-                                />
-                              );
-                            })}
+                          <div className="space-y-1.5">
+                            <div className="flex items-center gap-1.5 h-6">
+                              {(msg.voiceWaveform || [12, 20, 16, 24, 18, 14, 22, 10, 18]).map((h, i) => {
+                                const isThisPlaying = playingVoiceId === msg.id;
+                                return (
+                                  <motion.div
+                                    key={i}
+                                    animate={isThisPlaying ? {
+                                      height: [`${Math.max(4, h * 0.3)}px`, `${h}px`, `${Math.max(4, h * 0.4)}px`]
+                                    } : { height: `${h}px` }}
+                                    transition={isThisPlaying ? {
+                                      repeat: Infinity,
+                                      duration: 0.7 + (i % 3) * 0.2,
+                                      ease: "easeInOut"
+                                    } : { duration: 0.15 }}
+                                    className={`w-1 rounded-full ${msg.isMe ? "bg-black" : "bg-white"}`}
+                                  />
+                                );
+                              })}
+                            </div>
+                            <span className={`text-xs font-semibold ${msg.isMe ? "text-zinc-700" : "text-zinc-400"}`}>
+                              {playingVoiceId === msg.id ? "Playing Voice Note..." : `Voice Note (${msg.voiceDuration || "0:18"})`}
+                            </span>
                           </div>
-                          <span className={`text-xs font-semibold ${msg.isMe ? "text-zinc-700" : "text-zinc-400"}`}>
-                            {playingVoiceId === msg.id ? "Playing Voice Note..." : `Voice Note (${msg.voiceDuration || "0:18"})`}
-                          </span>
                         </div>
-                      </div>
-                    ) : (
-                      /* Text Message Bubble */
-                      <div
-                        className={`max-w-xl px-5 py-3 rounded-2xl text-sm sm:text-base leading-relaxed ${
-                          msg.isMe
-                            ? "bg-white text-black font-normal rounded-tr-sm"
-                            : "bg-zinc-900 text-zinc-100 rounded-tl-sm"
-                        }`}
-                      >
-                        {msg.content}
-                      </div>
-                    )}
+                      ) : (
+                        /* Text Message Bubble */
+                        <div
+                          className={`max-w-xl px-5 py-3 rounded-2xl text-sm sm:text-base leading-relaxed ${
+                            msg.isMe
+                              ? "bg-white text-black font-normal rounded-tr-sm"
+                              : "bg-zinc-900 text-zinc-100 rounded-tl-sm"
+                          }`}
+                        >
+                          {msg.content}
+                        </div>
+                      )}
 
-                    {/* Timestamp */}
-                    <div className="flex items-center gap-1.5 mt-1.5 px-1 text-xs text-zinc-500 font-normal">
-                      <span>{msg.timestamp}</span>
-                      {msg.isMe && <CheckCheck className="w-3.5 h-3.5 text-zinc-400" />}
-                    </div>
-                  </motion.div>
-                ))}
+                      {/* Timestamp */}
+                      <div className="flex items-center gap-1.5 mt-1.5 px-1 text-xs text-zinc-500 font-normal">
+                        <span>{msg.timestamp}</span>
+                        {msg.isMe && <CheckCheck className="w-3.5 h-3.5 text-zinc-400" />}
+                      </div>
+                    </motion.div>
+                  ))
+                )}
 
                 <div ref={messagesEndRef} />
               </div>

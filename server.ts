@@ -56,36 +56,7 @@ const fallbackUsers: Map<string, DevUser> = new Map([
   ["user-aayush", { id: "user-aayush", email: "student@tu.edu.np", username: "aayush_s", passwordHash: "password" }],
 ]);
 
-const fallbackMessages: DevMessage[] = [
-  {
-    id: "m1",
-    sender_username: "akhil_b",
-    receiver_username: "aayush_s",
-    content: "Hey! The routing table lookup is completely optimized now.",
-    created_at: new Date(Date.now() - 1000 * 60 * 25).toISOString(),
-  },
-  {
-    id: "m2",
-    sender_username: "aayush_s",
-    receiver_username: "akhil_b",
-    content: "Awesome! Did you test message persistence as well?",
-    created_at: new Date(Date.now() - 1000 * 60 * 20).toISOString(),
-  },
-  {
-    id: "m3",
-    sender_username: "akhil_b",
-    receiver_username: "aayush_s",
-    content: "Yes, everything works reliably even during network drops.",
-    created_at: new Date(Date.now() - 1000 * 60 * 15).toISOString(),
-  },
-  {
-    id: "m4",
-    sender_username: "sirjan_b",
-    receiver_username: "aayush_s",
-    content: "Would you like to review the updated typography and layout guidelines?",
-    created_at: new Date(Date.now() - 1000 * 60 * 60 * 20).toISOString(),
-  }
-];
+const fallbackMessages: DevMessage[] = [];
 
 interface AuthenticatedWebSocket extends WebSocket {
   name?: string;
@@ -506,6 +477,50 @@ async function startServer() {
       email: u.email,
     }));
     return res.json(devProfiles);
+  });
+
+  // Get Messages History for user
+  app.get("/api/messages", async (req, res) => {
+    const user = req.query.user as string;
+    if (!user) {
+      return res.json([]);
+    }
+
+    if (dbSupabase) {
+      try {
+        const { data, error } = await dbSupabase
+          .from("messages")
+          .select("id, sender_username, receiver_username, content, created_at")
+          .or(`sender_username.eq.${user},receiver_username.eq.${user}`)
+          .order("created_at", { ascending: true });
+
+        if (!error && data) {
+          return res.json(
+            data.map((m: any) => ({
+              id: m.id || `db-${m.created_at}`,
+              from: m.sender_username,
+              to: m.receiver_username,
+              content: m.content,
+              timestamp: m.created_at,
+            }))
+          );
+        }
+      } catch (err) {
+        console.error("Error querying messages:", err);
+      }
+    }
+
+    const userMsgs = fallbackMessages
+      .filter((m) => m.sender_username === user || m.receiver_username === user)
+      .map((m) => ({
+        id: m.id,
+        from: m.sender_username,
+        to: m.receiver_username,
+        content: m.content,
+        timestamp: m.created_at,
+      }));
+
+    return res.json(userMsgs);
   });
 
   // ─────────────────────────────────────────────────────────────
