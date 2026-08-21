@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from "react";
 import { Button } from "@/src/components/ui/button";
 import { Input } from "@/src/components/ui/input";
-import { X, Lock, Mail, User, ArrowRight, UserCheck } from "lucide-react";
+import { X, Lock, Mail, User, ArrowRight, UserCheck, AlertCircle } from "lucide-react";
+import { loginUser, signupUser, setStoredAuthUser } from "@/src/lib/auth";
+import { realtimeBus } from "@/src/lib/realtime";
 
 interface LoginModalProps {
   isOpen: boolean;
@@ -19,23 +21,57 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   const [mode, setMode] = useState<"login" | "signup">(initialMode);
   const [name, setName] = useState("Aayush Shrestha");
   const [email, setEmail] = useState("student@tu.edu.np");
-  const [password, setPassword] = useState("••••••••••••");
+  const [password, setPassword] = useState("password123");
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
     setMode(initialMode);
+    setErrorMessage(null);
   }, [initialMode, isOpen]);
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
-    setTimeout(() => {
+    setErrorMessage(null);
+
+    if (mode === "login") {
+      const res = await loginUser(email, password);
       setIsLoading(false);
+      if (res.error) {
+        setErrorMessage(res.error);
+        return;
+      }
+      realtimeBus.connectWebSocket();
       onSuccessLogin();
       onClose();
-    }, 400);
+    } else {
+      // Signup mode: extract username or clean handle
+      const username = (name || email.split("@")[0]).toLowerCase().replace(/[^a-z0-9_]/g, "_");
+      const res = await signupUser(email, password, username);
+      setIsLoading(false);
+      if (res.error) {
+        setErrorMessage(res.error);
+        return;
+      }
+      realtimeBus.connectWebSocket();
+      onSuccessLogin();
+      onClose();
+    }
+  };
+
+  const handleGuestEntry = () => {
+    setStoredAuthUser({
+      id: "user-guest",
+      email: "guest@sajilopatra.edu.np",
+      username: "aayush_s",
+      token: "dev-token-aayush_s",
+    });
+    realtimeBus.connectWebSocket();
+    onSuccessLogin();
+    onClose();
   };
 
   return (
@@ -150,6 +186,13 @@ export const LoginModal: React.FC<LoginModalProps> = ({
             </div>
           </div>
 
+          {errorMessage && (
+            <div className="p-2.5 rounded-lg bg-red-950/60 border border-red-800/80 text-red-300 text-xs flex items-center gap-2">
+              <AlertCircle className="w-3.5 h-3.5 shrink-0 text-red-400" />
+              <span>{errorMessage}</span>
+            </div>
+          )}
+
           <Button
             type="submit"
             disabled={isLoading}
@@ -168,10 +211,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
           <div className="pt-2 text-center">
             <button
               type="button"
-              onClick={() => {
-                onSuccessLogin();
-                onClose();
-              }}
+              onClick={handleGuestEntry}
               className="text-xs text-zinc-400 hover:text-white transition-colors cursor-pointer inline-flex items-center gap-1.5"
             >
               <UserCheck className="w-3.5 h-3.5 text-zinc-500" />

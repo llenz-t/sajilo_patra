@@ -13,7 +13,8 @@ import {
 } from "@/src/data/mockData";
 import { 
   RealtimeChatManager, 
-  RealtimeMessagePayload 
+  RealtimeMessagePayload,
+  realtimeBus
 } from "@/src/lib/realtime";
 import { motion, AnimatePresence } from "motion/react";
 import { 
@@ -185,6 +186,56 @@ export const AppView: React.FC<AppViewProps> = ({ onBackToLanding }) => {
       manager.cleanup();
     };
   }, [selectedContact.id]);
+
+  // Connect and sync history and live presence from WebSocket
+  useEffect(() => {
+    const unsubHistory = realtimeBus.subscribeHistory((messages) => {
+      setChatHistories(prev => {
+        const next = { ...prev };
+        messages.forEach(m => {
+          const peerKey = m.senderId === 'me' || m.senderId === 'aayush_s' 
+            ? (m.receiverId.startsWith('user-') ? m.receiverId : `user-${m.receiverId}`) 
+            : (m.senderId.startsWith('user-') ? m.senderId : `user-${m.senderId}`);
+          
+          if (!next[peerKey]) next[peerKey] = [];
+          const exists = next[peerKey].some(existing => existing.content === m.content && existing.timestamp === m.timestamp);
+          if (!exists) {
+            next[peerKey].push({
+              id: m.id,
+              senderId: m.senderId,
+              receiverId: m.receiverId,
+              content: m.content,
+              timestamp: m.timestamp,
+              status: 'read',
+              isMe: m.senderId === 'me' || m.senderId === 'aayush_s',
+              type: 'text'
+            });
+          }
+        });
+        return next;
+      });
+    });
+
+    const unsubPresence = realtimeBus.subscribePresence((onlineUsers) => {
+      setContacts(prev => prev.map(c => {
+        const handleName = c.handle.replace('@', '').toLowerCase();
+        const rawId = c.id.replace('user-', '').toLowerCase();
+        const isOnline = onlineUsers.some(u => {
+          const lower = u.toLowerCase();
+          return lower === handleName || lower === rawId || lower === rawId.replace('-', '_');
+        });
+        return {
+          ...c,
+          status: isOnline ? 'online' : c.status
+        };
+      }));
+    });
+
+    return () => {
+      unsubHistory();
+      unsubPresence();
+    };
+  }, []);
 
   // Scroll to bottom
   useEffect(() => {
