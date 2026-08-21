@@ -371,7 +371,6 @@ export const ScrollShowcaseSection: React.FC<ScrollShowcaseSectionProps> = ({
                     <div className="w-10 h-10 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center font-bold text-white text-sm">
                       KA
                     </div>
-                    <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-emerald-500 border-2 border-[#040407]" />
                   </div>
                   <div className="text-left">
                     <h4 className="text-base font-semibold text-white">Kriti Adhikari</h4>

@@ -23,6 +23,10 @@ export interface ChatMessage {
   timestamp: string;
   status: 'sent' | 'delivered' | 'read';
   isMe: boolean;
+  type?: 'text' | 'voice' | 'image';
+  voiceDuration?: string;
+  voiceWaveform?: number[];
+  attachmentUrl?: string;
 }
 
 export interface Contact {
