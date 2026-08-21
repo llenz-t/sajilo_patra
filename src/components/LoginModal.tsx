@@ -19,18 +19,35 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   onSuccessLogin 
 }) => {
   const [mode, setMode] = useState<"login" | "signup">(initialMode);
-  const [name, setName] = useState("Aayush Shrestha");
-  const [email, setEmail] = useState("student@tu.edu.np");
-  const [password, setPassword] = useState("password123");
+  const [name, setName] = useState("");
+  const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
     setMode(initialMode);
     setErrorMessage(null);
+    if (initialMode === "login") {
+      setEmail("student@tu.edu.np");
+      setPassword("password");
+    } else {
+      setName("");
+      setUsername("");
+      setEmail("");
+      setPassword("");
+    }
   }, [initialMode, isOpen]);
 
   if (!isOpen) return null;
+
+  const handleNameChange = (val: string) => {
+    setName(val);
+    if (!username || username === name.toLowerCase().replace(/[^a-z0-9_]/g, "_")) {
+      setUsername(val.toLowerCase().replace(/[^a-z0-9_]/g, "_"));
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -44,19 +61,21 @@ export const LoginModal: React.FC<LoginModalProps> = ({
         setErrorMessage(res.error);
         return;
       }
-      realtimeBus.connectWebSocket();
       onSuccessLogin();
       onClose();
     } else {
-      // Signup mode: extract username or clean handle
-      const username = (name || email.split("@")[0]).toLowerCase().replace(/[^a-z0-9_]/g, "_");
-      const res = await signupUser(email, password, username);
+      const chosenUsername = (username || name || email.split("@")[0]).toLowerCase().replace(/[^a-z0-9_]/g, "_");
+      if (!chosenUsername) {
+        setIsLoading(false);
+        setErrorMessage("Please enter a valid username");
+        return;
+      }
+      const res = await signupUser(email, password, chosenUsername);
       setIsLoading(false);
       if (res.error) {
         setErrorMessage(res.error);
         return;
       }
-      realtimeBus.connectWebSocket();
       onSuccessLogin();
       onClose();
     }
@@ -69,7 +88,6 @@ export const LoginModal: React.FC<LoginModalProps> = ({
       username: "aayush_s",
       token: "dev-token-aayush_s",
     });
-    realtimeBus.connectWebSocket();
     onSuccessLogin();
     onClose();
   };
@@ -135,22 +153,40 @@ export const LoginModal: React.FC<LoginModalProps> = ({
 
         <form onSubmit={handleSubmit} className="space-y-3.5 text-left">
           {mode === "signup" && (
-            <div>
-              <label className="block text-[11px] font-medium text-zinc-300 mb-1">
-                Full Name
-              </label>
-              <div className="relative">
-                <User className="absolute left-3 top-2.5 h-4 w-4 text-zinc-500" />
-                <Input
-                  type="text"
-                  value={name}
-                  onChange={e => setName(e.target.value)}
-                  placeholder="Aayush Shrestha"
-                  className="pl-9 h-10 bg-zinc-950 border-zinc-800 text-white rounded-lg text-xs focus:border-zinc-500"
-                  required
-                />
+            <>
+              <div>
+                <label className="block text-[11px] font-medium text-zinc-300 mb-1">
+                  Full Name
+                </label>
+                <div className="relative">
+                  <User className="absolute left-3 top-2.5 h-4 w-4 text-zinc-500" />
+                  <Input
+                    type="text"
+                    value={name}
+                    onChange={e => handleNameChange(e.target.value)}
+                    placeholder="Suman Kumar"
+                    className="pl-9 h-10 bg-zinc-950 border-zinc-800 text-white rounded-lg text-xs focus:border-zinc-500"
+                    required
+                  />
+                </div>
               </div>
-            </div>
+              <div>
+                <label className="block text-[11px] font-medium text-zinc-300 mb-1">
+                  Username (Handle)
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3 top-2.5 text-xs text-zinc-500 font-semibold">@</span>
+                  <Input
+                    type="text"
+                    value={username}
+                    onChange={e => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, "_"))}
+                    placeholder="suman"
+                    className="pl-9 h-10 bg-zinc-950 border-zinc-800 text-white rounded-lg text-xs focus:border-zinc-500"
+                    required
+                  />
+                </div>
+              </div>
+            </>
           )}
 
           <div>
@@ -163,7 +199,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                 type="email"
                 value={email}
                 onChange={e => setEmail(e.target.value)}
-                placeholder="student@tu.edu.np"
+                placeholder="suman@ku.edu.np"
                 className="pl-9 h-10 bg-zinc-950 border-zinc-800 text-white rounded-lg text-xs focus:border-zinc-500"
                 required
               />

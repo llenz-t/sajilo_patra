@@ -15,7 +15,7 @@ import {
   RealtimeMessagePayload,
   realtimeBus
 } from "@/src/lib/realtime";
-import { getStoredAuthUser } from "@/src/lib/auth";
+import { getStoredAuthUser, subscribeAuth, clearAuthSession, AuthUser } from "@/src/lib/auth";
 import { motion, AnimatePresence } from "motion/react";
 import { 
   MessageSquare, 
@@ -80,12 +80,24 @@ export const AppView: React.FC<AppViewProps> = ({ onBackToLanding }) => {
   const [matchingScope, setMatchingScope] = useState<"all" | "Same Campus" | "Cross-University">("all");
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const realtimeManagerRef = useRef<RealtimeChatManager | null>(null);
+
+  // Auth User State
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(getStoredAuthUser());
 
   // Empty initial chatHistories - NO placeholder mock chats
   const [chatHistories, setChatHistories] = useState<Record<string, ChatMessage[]>>({});
 
-  // 1. Fetch real users from backend database
+  // Subscribe to reactive auth changes
+  useEffect(() => {
+    const unsub = subscribeAuth((user) => {
+      setCurrentUser(user);
+    });
+    return () => unsub();
+  }, []);
+
+  const myUsername = currentUser?.username || "aayush_s";
+
+  // 1. Fetch real users from backend database (exclude myself)
   useEffect(() => {
     async function fetchUsers() {
       try {
@@ -93,9 +105,6 @@ export const AppView: React.FC<AppViewProps> = ({ onBackToLanding }) => {
         if (!res.ok) return;
         const profiles = await res.json();
         if (Array.isArray(profiles) && profiles.length > 0) {
-          const authUser = getStoredAuthUser();
-          const myUsername = authUser?.username || "aayush_s";
-
           const mappedContacts: Contact[] = profiles
             .filter((p: any) => p.username !== myUsername)
             .map((p: any) => {
@@ -128,8 +137,8 @@ export const AppView: React.FC<AppViewProps> = ({ onBackToLanding }) => {
               };
             });
 
+          setContacts(mappedContacts);
           if (mappedContacts.length > 0) {
-            setContacts(mappedContacts);
             setSelectedContact(prev => {
               const match = mappedContacts.find(c => c.id === prev.id);
               return match || mappedContacts[0];
@@ -142,43 +151,43 @@ export const AppView: React.FC<AppViewProps> = ({ onBackToLanding }) => {
     }
 
     fetchUsers();
-  }, []);
+  }, [myUsername]);
 
   // 2. Fetch past messages for current authenticated user
   useEffect(() => {
     async function fetchPastMessages() {
-      const authUser = getStoredAuthUser();
-      const myUsername = authUser?.username || "aayush_s";
+      if (!myUsername) return;
       try {
         const res = await fetch(`/api/messages?user=${encodeURIComponent(myUsername)}`);
         if (!res.ok) return;
         const msgs = await res.json();
-        if (Array.isArray(msgs) && msgs.length > 0) {
-          setChatHistories(prev => {
-            const next = { ...prev };
-            msgs.forEach((m: any) => {
-              const peerUsername = m.from === myUsername ? m.to : m.from;
-              const peerKey = `user-${peerUsername}`;
-              if (!next[peerKey]) next[peerKey] = [];
-              const isMe = m.from === myUsername;
-              const exists = next[peerKey].some(
-                ex => ex.id === m.id || (ex.content === m.content && ex.timestamp === m.timestamp)
-              );
-              if (!exists) {
-                next[peerKey].push({
-                  id: m.id || `msg-${Date.now()}-${Math.random()}`,
-                  senderId: isMe ? "me" : peerKey,
-                  receiverId: isMe ? peerKey : "me",
-                  content: m.content,
-                  timestamp: m.timestamp ? new Date(m.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "Recently",
-                  status: "read",
-                  isMe,
-                  type: "text"
-                });
-              }
-            });
-            return next;
+        if (Array.isArray(msgs)) {
+          const nextHistories: Record<string, ChatMessage[]> = {};
+          msgs.forEach((m: any) => {
+            const senderClean = m.from.replace("user-", "");
+            const receiverClean = m.to.replace("user-", "");
+            const isMe = senderClean === myUsername;
+            const peerUsername = isMe ? receiverClean : senderClean;
+            const peerKey = `user-${peerUsername}`;
+
+            if (!nextHistories[peerKey]) nextHistories[peerKey] = [];
+            const exists = nextHistories[peerKey].some(
+              ex => ex.id === m.id || (ex.content === m.content && ex.timestamp === m.timestamp)
+            );
+            if (!exists) {
+              nextHistories[peerKey].push({
+                id: m.id || `msg-${Date.now()}-${Math.random()}`,
+                senderId: isMe ? "me" : peerKey,
+                receiverId: isMe ? peerKey : "me",
+                content: m.content,
+                timestamp: m.timestamp ? new Date(m.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "Recently",
+                status: "read",
+                isMe,
+                type: "text"
+              });
+            }
           });
+          setChatHistories(nextHistories);
         }
       } catch (e) {
         console.warn("Failed to fetch messages:", e);
@@ -186,7 +195,7 @@ export const AppView: React.FC<AppViewProps> = ({ onBackToLanding }) => {
     }
 
     fetchPastMessages();
-  }, []);
+  }, [myUsername]);
 
   // Voice playback auto-stop timer
   useEffect(() => {
@@ -201,13 +210,18 @@ export const AppView: React.FC<AppViewProps> = ({ onBackToLanding }) => {
 
   // Realtime WebSocket channel & global message listener
   useEffect(() => {
-    const authUser = getStoredAuthUser();
-    const myUsername = authUser?.username || "aayush_s";
-
     const unsubAll = realtimeBus.subscribeAllMessages((incoming: RealtimeMessagePayload) => {
-      const isFromMe = incoming.senderId === myUsername || incoming.senderId === "me";
-      const peerUsername = isFromMe ? incoming.receiverId : incoming.senderId;
-      const peerKey = peerUsername.startsWith("user-") ? peerUsername : `user-${peerUsername}`;
+      const senderClean = incoming.senderId.replace("user-", "");
+      const receiverClean = incoming.receiverId.replace("user-", "");
+
+      const isFromMe = senderClean === myUsername || senderClean === "me";
+      const isToMe = receiverClean === myUsername || receiverClean === "me";
+
+      // Discard messages that do not involve current user
+      if (!isFromMe && !isToMe) return;
+
+      const peerUsername = isFromMe ? receiverClean : senderClean;
+      const peerKey = `user-${peerUsername}`;
 
       const newMsg: ChatMessage = {
         id: incoming.id,
@@ -237,12 +251,18 @@ export const AppView: React.FC<AppViewProps> = ({ onBackToLanding }) => {
       setChatHistories(prev => {
         const next = { ...prev };
         messages.forEach(m => {
-          const isFromMe = m.senderId === myUsername || m.senderId === "me";
-          const peerUsername = isFromMe ? m.receiverId : m.senderId;
-          const peerKey = peerUsername.startsWith("user-") ? peerUsername : `user-${peerUsername}`;
+          const senderClean = m.senderId.replace("user-", "");
+          const receiverClean = m.receiverId.replace("user-", "");
+          const isFromMe = senderClean === myUsername || senderClean === "me";
+          const isToMe = receiverClean === myUsername || receiverClean === "me";
+
+          if (!isFromMe && !isToMe) return;
+
+          const peerUsername = isFromMe ? receiverClean : senderClean;
+          const peerKey = `user-${peerUsername}`;
 
           if (!next[peerKey]) next[peerKey] = [];
-          const exists = next[peerKey].some(existing => existing.content === m.content && existing.timestamp === m.timestamp);
+          const exists = next[peerKey].some(existing => existing.id === m.id || (existing.content === m.content && existing.timestamp === m.timestamp));
           if (!exists) {
             next[peerKey].push({
               id: m.id,
@@ -280,7 +300,7 @@ export const AppView: React.FC<AppViewProps> = ({ onBackToLanding }) => {
       unsubHistory();
       unsubPresence();
     };
-  }, []);
+  }, [myUsername]);
 
   // Scroll to bottom on updates
   useEffect(() => {
@@ -309,14 +329,13 @@ export const AppView: React.FC<AppViewProps> = ({ onBackToLanding }) => {
     const messageContent = typedMessage.trim();
     const timestampStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     const msgId = `msg-${Date.now()}`;
-    const authUser = getStoredAuthUser();
-    const myUsername = authUser?.username || "aayush_s";
-    const targetUsername = selectedContact.handle.replace("@", "");
+    const targetUsername = selectedContact.id.replace("user-", "");
+    const contactKey = `user-${targetUsername}`;
 
     const newMsg: ChatMessage = {
       id: msgId,
       senderId: "me",
-      receiverId: selectedContact.id,
+      receiverId: contactKey,
       content: messageContent,
       timestamp: timestampStr,
       status: "delivered",
@@ -326,12 +345,12 @@ export const AppView: React.FC<AppViewProps> = ({ onBackToLanding }) => {
 
     setChatHistories(prev => ({
       ...prev,
-      [selectedContact.id]: [...(prev[selectedContact.id] || []), newMsg]
+      [contactKey]: [...(prev[contactKey] || []), newMsg]
     }));
 
     setTypedMessage("");
 
-    // Dispatch real WebSocket frame and commit to Supabase messages
+    // Dispatch real WebSocket frame
     realtimeBus.dispatchMessage({
       id: msgId,
       senderId: myUsername,
@@ -346,15 +365,14 @@ export const AppView: React.FC<AppViewProps> = ({ onBackToLanding }) => {
     setIsVoiceRecording(false);
     const timestampStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     const voiceMsgId = `voice-${Date.now()}`;
-    const authUser = getStoredAuthUser();
-    const myUsername = authUser?.username || "aayush_s";
-    const targetUsername = selectedContact.handle.replace("@", "");
+    const targetUsername = selectedContact.id.replace("user-", "");
+    const contactKey = `user-${targetUsername}`;
 
     const voiceMsg: ChatMessage = {
       id: voiceMsgId,
       senderId: "me",
-      receiverId: selectedContact.id,
-      content: "Voice note recorded",
+      receiverId: contactKey,
+      content: "Voice note (0:14)",
       timestamp: timestampStr,
       status: "delivered",
       isMe: true,
@@ -365,7 +383,7 @@ export const AppView: React.FC<AppViewProps> = ({ onBackToLanding }) => {
 
     setChatHistories(prev => ({
       ...prev,
-      [selectedContact.id]: [...(prev[selectedContact.id] || []), voiceMsg]
+      [contactKey]: [...(prev[contactKey] || []), voiceMsg]
     }));
 
     realtimeBus.dispatchMessage({
@@ -1231,22 +1249,23 @@ export const AppView: React.FC<AppViewProps> = ({ onBackToLanding }) => {
 
               <div className="p-6 rounded-2xl bg-zinc-950 border border-zinc-800 space-y-6">
                 <div className="flex items-center gap-4">
-                  <div className="w-16 h-16 rounded-full bg-white text-black font-bold text-xl flex items-center justify-center shrink-0">
-                    SP
+                  <div className="w-16 h-16 rounded-full bg-white text-black font-bold text-xl flex items-center justify-center shrink-0 uppercase">
+                    {(myUsername || "SP").slice(0, 2)}
                   </div>
                   <div>
-                    <h3 className="font-bold text-lg text-white">Student Account</h3>
-                    <p className="text-xs text-zinc-400">Kathmandu University • Computer Engineering</p>
+                    <h3 className="font-bold text-lg text-white">@{myUsername}</h3>
+                    <p className="text-xs text-zinc-400">{currentUser?.email || "student@sajilopatra.edu.np"}</p>
                   </div>
                 </div>
 
                 <div className="space-y-4 pt-4 border-t border-zinc-900 text-sm">
                   <div>
-                    <label className="block text-xs font-semibold text-zinc-400 mb-1.5">Full Name</label>
+                    <label className="block text-xs font-semibold text-zinc-400 mb-1.5">Username Handle</label>
                     <input
                       type="text"
-                      defaultValue="Student Developer"
-                      className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-2.5 text-white text-sm outline-none focus:border-zinc-600"
+                      disabled
+                      value={myUsername}
+                      className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-2.5 text-zinc-400 text-sm outline-none cursor-not-allowed"
                     />
                   </div>
 
@@ -1254,7 +1273,7 @@ export const AppView: React.FC<AppViewProps> = ({ onBackToLanding }) => {
                     <label className="block text-xs font-semibold text-zinc-400 mb-1.5">University</label>
                     <input
                       type="text"
-                      defaultValue="Kathmandu University"
+                      defaultValue="Tribhuvan University / Kathmandu University"
                       className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-2.5 text-white text-sm outline-none focus:border-zinc-600"
                     />
                   </div>
@@ -1263,22 +1282,34 @@ export const AppView: React.FC<AppViewProps> = ({ onBackToLanding }) => {
                     <label className="block text-xs font-semibold text-zinc-400 mb-1.5">Bio</label>
                     <textarea
                       rows={3}
-                      defaultValue="Studying distributed systems and real-time networking. Looking for study partners and hackathon teammates."
+                      defaultValue="Student Developer. Studying distributed systems and real-time networking."
                       className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-2.5 text-white text-sm outline-none focus:border-zinc-600 leading-relaxed"
                     />
                   </div>
                 </div>
 
-                <button
-                  onClick={() => {
-                    try {
-                      confetti({ particleCount: 25, spread: 50, origin: { y: 0.6 } });
-                    } catch (e) {}
-                  }}
-                  className="px-6 py-2.5 rounded-xl bg-white text-black font-semibold text-xs hover:bg-zinc-200 transition-colors cursor-pointer"
-                >
-                  Save Profile
-                </button>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => {
+                      try {
+                        confetti({ particleCount: 25, spread: 50, origin: { y: 0.6 } });
+                      } catch (e) {}
+                    }}
+                    className="px-6 py-2.5 rounded-xl bg-white text-black font-semibold text-xs hover:bg-zinc-200 transition-colors cursor-pointer"
+                  >
+                    Save Profile
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      clearAuthSession();
+                      onBackToLanding();
+                    }}
+                    className="px-6 py-2.5 rounded-xl bg-red-950/80 border border-red-800/80 text-red-300 hover:text-white font-semibold text-xs transition-colors cursor-pointer"
+                  >
+                    Log Out
+                  </button>
+                </div>
               </div>
 
             </div>

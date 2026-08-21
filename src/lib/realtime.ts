@@ -1,12 +1,12 @@
 // Realtime WebSocket Client Engine
 // Connects to the Express WebSocket server on port 3000 (/ws)
-// Implements the exact envelope protocol from the Supabase backend:
-// 1. Auth handshake: { type: 'auth', token: '<access_token>' }
+// Implements the exact envelope protocol:
+// 1. Auth handshake: { type: 'auth', token: '<access_token>', username: '<username>' }
 // 2. Direct message: { type: 'message', to: '<username>', content: '<text>' }
 // 3. History listener: { type: 'history', messages: [...] }
-// 4. Inbound router: { type: 'message', from: '<sender>', content: '<text>' }
+// 4. Inbound router: { type: 'message', from: '<sender>', to: '<receiver>', content: '<text>' }
 
-import { getStoredAuthUser } from "./auth";
+import { getStoredAuthUser, subscribeAuth, AuthUser } from "./auth";
 
 export interface RealtimeMessagePayload {
   id: string;
@@ -23,7 +23,6 @@ export type ConnectionStatus = "CONNECTING" | "CONNECTED" | "DISCONNECTED" | "ER
 
 class RealtimeBus {
   private ws: WebSocket | null = null;
-  private broadcastChannel: BroadcastChannel | null = null;
   private listeners: Map<string, Set<(msg: RealtimeMessagePayload) => void>> = new Map();
   private globalMessageListeners: Set<(msg: RealtimeMessagePayload) => void> = new Set();
   private statusListeners: Set<(status: ConnectionStatus, latencyMs?: number) => void> = new Set();
@@ -37,30 +36,43 @@ class RealtimeBus {
 
   constructor() {
     if (typeof window !== "undefined") {
-      if ("BroadcastChannel" in window) {
-        try {
-          this.broadcastChannel = new BroadcastChannel("sajilo_patra_mesh_channel");
-          this.broadcastChannel.onmessage = (event) => {
-            if (event.data && event.data.type === "CHAT_MESSAGE") {
-              const payload = event.data.payload as RealtimeMessagePayload;
-              this.notifyListeners(payload.receiverId, payload);
-              this.notifyListeners(payload.senderId, payload);
-            }
-          };
-        } catch (e) {
-          console.warn("BroadcastChannel fallback:", e);
-        }
-      }
-
       this.connectWebSocket();
+
+      // Listen to auth changes and re-authenticate socket immediately
+      subscribeAuth((user) => {
+        this.reauthenticate(user);
+      });
     }
   }
 
-  public connectWebSocket() {
+  public reauthenticate(user: AuthUser | null) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      const token = user?.token || "dev-token-guest";
+      const username = user?.username || "guest";
+      this.ws.send(
+        JSON.stringify({
+          type: "auth",
+          token,
+          username,
+        })
+      );
+    } else {
+      this.connectWebSocket(true);
+    }
+  }
+
+  public connectWebSocket(forceReconnect: boolean = false) {
     if (typeof window === "undefined") return;
 
-    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+    if (!forceReconnect && this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
       return;
+    }
+
+    if (this.ws) {
+      try {
+        this.ws.close();
+      } catch {}
+      this.ws = null;
     }
 
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -76,10 +88,10 @@ class RealtimeBus {
         console.log("⚡ WebSocket connected to backend");
         this.setStatus("CONNECTED", 12);
         
-        // 1. Send auth envelope with access token or dev token
+        // Send auth envelope with access token or dev token
         const authUser = getStoredAuthUser();
-        const token = authUser?.token || "dev-token-aayush_s";
-        const username = authUser?.username || "aayush_s";
+        const token = authUser?.token || (authUser ? `dev-token-${authUser.username}` : "dev-token-guest");
+        const username = authUser?.username || "guest";
 
         this.ws?.send(
           JSON.stringify({
@@ -110,9 +122,9 @@ class RealtimeBus {
 
           if (data.type === "history" && Array.isArray(data.messages)) {
             const mapped: RealtimeMessagePayload[] = data.messages.map((m: any) => ({
-              id: `hist-${Date.now()}-${Math.random()}`,
+              id: m.id || `hist-${Date.now()}-${Math.random()}`,
               senderId: m.from,
-              receiverId: m.to || "me",
+              receiverId: m.to,
               content: m.content,
               timestamp: m.timestamp ? new Date(m.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "Just now",
             }));
@@ -122,14 +134,13 @@ class RealtimeBus {
 
           if (data.type === "message") {
             const payload: RealtimeMessagePayload = {
-              id: `ws-${Date.now()}-${Math.random()}`,
+              id: data.id || `ws-${Date.now()}-${Math.random()}`,
               senderId: data.from,
-              receiverId: data.to || "me",
+              receiverId: data.to,
               content: data.content,
               timestamp: data.timestamp ? new Date(data.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "Just now",
             };
-            this.notifyListeners(payload.receiverId, payload);
-            this.notifyListeners(payload.senderId, payload);
+            this.notifyListeners(payload);
             return;
           }
 
@@ -143,7 +154,7 @@ class RealtimeBus {
       };
 
       this.ws.onclose = () => {
-        console.log("🔌 WebSocket disconnected, reconnecting...");
+        console.log("🔌 WebSocket disconnected, scheduling reconnect...");
         this.setStatus("DISCONNECTED");
         this.stopHeartbeat();
         this.scheduleReconnect();
@@ -199,13 +210,14 @@ class RealtimeBus {
     roomId: string,
     callback: (msg: RealtimeMessagePayload) => void
   ): () => void {
-    if (!this.listeners.has(roomId)) {
-      this.listeners.set(roomId, new Set());
+    const key = roomId.replace("user-", "");
+    if (!this.listeners.has(key)) {
+      this.listeners.set(key, new Set());
     }
-    this.listeners.get(roomId)!.add(callback);
+    this.listeners.get(key)!.add(callback);
 
     return () => {
-      this.listeners.get(roomId)?.delete(callback);
+      this.listeners.get(key)?.delete(callback);
     };
   }
 
@@ -239,9 +251,8 @@ class RealtimeBus {
   }
 
   public dispatchMessage(payload: RealtimeMessagePayload): void {
-    // 1. Send via WebSocket if connected
+    // Send via WebSocket to server
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      // Map contact IDs (e.g. 'user-akhil_b') to usernames ('akhil_b')
       const recipient = payload.receiverId.replace("user-", "");
       this.ws.send(
         JSON.stringify({
@@ -251,41 +262,16 @@ class RealtimeBus {
         })
       );
     }
-
-    // 2. Broadcast to other browser tabs
-    if (this.broadcastChannel) {
-      try {
-        this.broadcastChannel.postMessage({
-          type: "CHAT_MESSAGE",
-          payload,
-        });
-      } catch (e) {
-        console.error("Error posting to BroadcastChannel:", e);
-      }
-    }
-
-    // 3. Dispatch to local room listeners
-    this.notifyListeners(payload.receiverId, payload);
-    this.notifyListeners(payload.senderId, payload);
   }
 
-  private notifyListeners(roomId: string, payload: RealtimeMessagePayload) {
+  private notifyListeners(payload: RealtimeMessagePayload) {
     this.globalMessageListeners.forEach((cb) => cb(payload));
 
-    const directListeners = this.listeners.get(roomId);
-    if (directListeners) {
-      directListeners.forEach((cb) => cb(payload));
-    }
+    const senderKey = payload.senderId.replace("user-", "");
+    const receiverKey = payload.receiverId.replace("user-", "");
 
-    const prefixedId = roomId.startsWith("user-") ? roomId : `user-${roomId}`;
-    const unprefixedId = roomId.replace("user-", "");
-    
-    if (prefixedId !== roomId) {
-      this.listeners.get(prefixedId)?.forEach((cb) => cb(payload));
-    }
-    if (unprefixedId !== roomId) {
-      this.listeners.get(unprefixedId)?.forEach((cb) => cb(payload));
-    }
+    this.listeners.get(senderKey)?.forEach((cb) => cb(payload));
+    this.listeners.get(receiverKey)?.forEach((cb) => cb(payload));
   }
 
   public getLatency(): number {
@@ -328,3 +314,4 @@ export class RealtimeChatManager {
     }
   }
 }
+

@@ -73,11 +73,28 @@ async function startServer() {
   // WEBSOCKET SERVER (Port 3000 /ws with exact protocol from user's backend)
   // ─────────────────────────────────────────────────────────────
   const wss = new WebSocketServer({ server, path: "/ws" });
-  const clients = new Map<string, AuthenticatedWebSocket>();
+  const clients = new Map<string, Set<AuthenticatedWebSocket>>();
+
+  function addClientSocket(username: string, socket: AuthenticatedWebSocket) {
+    if (!clients.has(username)) {
+      clients.set(username, new Set());
+    }
+    clients.get(username)!.add(socket);
+  }
+
+  function removeClientSocket(username: string, socket: AuthenticatedWebSocket) {
+    const userSockets = clients.get(username);
+    if (userSockets) {
+      userSockets.delete(socket);
+      if (userSockets.size === 0) {
+        clients.delete(username);
+      }
+    }
+  }
 
   wss.on("connection", (socket: AuthenticatedWebSocket) => {
     socket.isAlive = true;
-    console.log("✅ New client connected (not yet authenticated)");
+    console.log("✅ New client connected (awaiting auth)");
 
     socket.on("pong", () => {
       socket.isAlive = true;
@@ -93,7 +110,7 @@ async function startServer() {
         return;
       }
 
-      // 2. Auth message type: { type: 'auth', token: '...' }
+      // 2. Auth message type: { type: 'auth', token: '...', username: '...' }
       if (msg.type === "auth") {
         let username: string | null = null;
 
@@ -130,7 +147,7 @@ async function startServer() {
           if (msg.token && msg.token.startsWith("dev-token-")) {
             const requestedUsername = msg.token.replace("dev-token-", "");
             username = requestedUsername;
-          } else if (msg.username) {
+          } else if (msg.username && msg.username !== "guest") {
             username = msg.username;
           } else {
             username = "aayush_s";
@@ -143,8 +160,13 @@ async function startServer() {
           return;
         }
 
+        // Clean up previous registration on this socket if re-authenticating
+        if (socket.name && socket.name !== username) {
+          removeClientSocket(socket.name, socket);
+        }
+
         socket.name = username;
-        clients.set(socket.name, socket);
+        addClientSocket(socket.name, socket);
         console.log(`👤 Authenticated as: ${socket.name}`);
 
         // 3. Structured auth_success response
@@ -155,7 +177,7 @@ async function startServer() {
           try {
             const { data: history, error: historyError } = await dbSupabase
               .from("messages")
-              .select("sender_username, receiver_username, content, created_at")
+              .select("id, sender_username, receiver_username, content, created_at")
               .or(`receiver_username.eq.${socket.name},sender_username.eq.${socket.name}`)
               .order("created_at", { ascending: true });
 
@@ -164,6 +186,7 @@ async function startServer() {
                 JSON.stringify({
                   type: "history",
                   messages: history.map((m: any) => ({
+                    id: m.id,
                     from: m.sender_username,
                     to: m.receiver_username,
                     content: m.content,
@@ -186,6 +209,7 @@ async function startServer() {
               JSON.stringify({
                 type: "history",
                 messages: userMessages.map((m) => ({
+                  id: m.id,
                   from: m.sender_username,
                   to: m.receiver_username,
                   content: m.content,
@@ -215,6 +239,9 @@ async function startServer() {
           return;
         }
 
+        const msgId = msg.id || `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+        const timestamp = new Date().toISOString();
+
         // Save to Supabase messages table
         if (dbSupabase) {
           try {
@@ -233,35 +260,38 @@ async function startServer() {
         } else {
           // Fallback persistence
           fallbackMessages.push({
-            id: "msg-" + Date.now(),
+            id: msgId,
             sender_username: socket.name,
             receiver_username: to,
             content,
-            created_at: new Date().toISOString(),
+            created_at: timestamp,
           });
         }
 
-        const targetSocket = clients.get(to);
+        const targetSockets = clients.get(to);
+        const outboundPayload = JSON.stringify({
+          type: "message",
+          id: msgId,
+          from: socket.name,
+          to,
+          content,
+          timestamp,
+        });
 
-        if (targetSocket && targetSocket.readyState === WebSocket.OPEN) {
-          targetSocket.send(
-            JSON.stringify({
-              type: "message",
-              from: socket.name,
-              to,
-              content,
-              timestamp: new Date().toISOString(),
-            })
-          );
+        let delivered = false;
+        if (targetSockets && targetSockets.size > 0) {
+          targetSockets.forEach((clientSocket) => {
+            if (clientSocket.readyState === WebSocket.OPEN) {
+              clientSocket.send(outboundPayload);
+              delivered = true;
+            }
+          });
+        }
+
+        if (delivered) {
           console.log(`➡️ Routed message from ${socket.name} to ${to}`);
         } else {
-          console.log(`⚠️ ${to} is not connected — message saved for later`);
-          socket.send(
-            JSON.stringify({
-              type: "error",
-              message: `${to} is not online, message saved`,
-            })
-          );
+          console.log(`⚠️ ${to} is not currently connected — saved message`);
         }
         return;
       }
@@ -277,7 +307,7 @@ async function startServer() {
 
     socket.on("close", () => {
       if (socket.name) {
-        clients.delete(socket.name);
+        removeClientSocket(socket.name, socket);
         console.log(`❌ ${socket.name} disconnected`);
         broadcastPresence();
       }
@@ -285,16 +315,21 @@ async function startServer() {
   });
 
   function broadcastPresence() {
-    const onlineUsernames = Array.from(clients.keys());
+    const onlineUsernames = Array.from(clients.keys()).filter((u) => {
+      const s = clients.get(u);
+      return s && s.size > 0;
+    });
+
     const presencePayload = JSON.stringify({
       type: "presence",
       onlineUsers: onlineUsernames,
     });
-    for (const client of clients.values()) {
+
+    wss.clients.forEach((client) => {
       if (client.readyState === WebSocket.OPEN) {
         client.send(presencePayload);
       }
-    }
+    });
   }
 
   // Periodic heartbeat cleanup
